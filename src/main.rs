@@ -1,30 +1,35 @@
-mod db;
-mod handlers;
+use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
+
 mod models;
+mod handlers;
+mod db;
+mod utils;
 
-use actix_web::{web, App, HttpServer};
-use db::create_pool;
-use handlers::*;
+use handlers::{handle_client};
+use db::set_database;
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    // PostgreSQL 연결 풀을 생성합니다.
-    let pool = create_pool().await;
+// 메인 함수
+fn main() {
+    // 데이터베이스 설정
+    if let Err(e) = set_database() {
+        println!("데이터베이스 설정 중 오류 발생: {}", e);
+        return;
+    }
 
-    // HttpServer를 설정하고, 라우팅을 구성합니다.
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(pool.clone())) // 데이터베이스 풀을 애플리케이션 데이터로 설정합니다.
-            .service(
-                web::scope("/api")
-                    .route("/items", web::post().to(create_item)) // POST /api/items
-                    .route("/items", web::get().to(get_items))    // GET /api/items
-                    .route("/items/{id}", web::get().to(get_item)) // GET /api/items/{id}
-                    .route("/items/{id}", web::put().to(update_item)) // PUT /api/items/{id}
-                    .route("/items/{id}", web::delete().to(delete_item)) // DELETE /api/items/{id}
-            )
-    })
-    .bind("0.0.0.0:8080")? // 서버를 8080 포트에 바인딩합니다.
-    .run()
-    .await
+    // 서버 시작 및 포트 출력
+    let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
+    println!("서버가 8080 포트에서 시작되었습니다.");
+
+    // 클라이언트 요청 처리
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                handle_client(stream);
+            }
+            Err(e) => {
+                println!("클라이언트 연결 중 오류 발생: {}", e);
+            }
+        }
+    }
 }

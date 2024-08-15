@@ -1,98 +1,158 @@
-use actix_web::{web, HttpResponse};
-use sqlx::PgPool;
+use std::net::TcpStream;
+use std::io::{Read, Write};
+use crate::db::DB_URL;
+use postgres::{Client, NoTls};
+use crate::models::User;
+use crate::utils::{get_id, get_user_request_body};
 
-use crate::models::{CreateItem, Item};
+// HTTP 응답 상태 상수
+const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n";
+const NOT_FOUND: &str = "HTTP/1.1 404 NOT FOUND\r\n\r\n";
+const INTERNAL_SERVER_ERROR: &str = "HTTP/1.1 500 INTERNAL SERVER ERROR\r\n\r\n";
 
-/// 새로운 아이템을 생성하는 핸들러
-pub async fn create_item(
-    pool: web::Data<PgPool>,
-    item: web::Json<CreateItem>,
-) -> HttpResponse {
-    let result = sqlx::query!(
-        r#"
-        INSERT INTO items (name, description) VALUES ($1, $2)
-        "#,
-        item.name,
-        item.description
-    )
-    .execute(pool.get_ref())
-    .await;
+// 클라이언트 요청 처리 함수
+pub fn handle_client(mut stream: TcpStream) {
+    let mut buffer = [0; 1024];
+    let mut request = String::new();
 
-    match result {
-        Ok(_) => HttpResponse::Created().json(item.into_inner()),
-        Err(_) => HttpResponse::InternalServerError().finish(),
+    match stream.read(&mut buffer) {
+        Ok(size) => {
+            request.push_str(String::from_utf8_lossy(&buffer[..size]).as_ref());
+
+            let (status_line, content) = match &*request {
+                r if r.starts_with("POST /users") => {
+                    println!("POST /users 요청 도착");
+                    handle_post_request(r)
+                },
+                r if r.starts_with("GET /users/") => {
+                    println!("GET /users/ 요청 도착");
+                    handle_get_request(r)
+                },
+                r if r.starts_with("GET /users") => {
+                    println!("GET /users 요청 도착");
+                    handle_get_all_request(r)
+                },
+                r if r.starts_with("PUT /users/") => {
+                    println!("PUT /users/ 요청 도착");
+                    handle_put_request(r)
+                },
+                r if r.starts_with("DELETE /users/") => {
+                    println!("DELETE /users/ 요청 도착");
+                    handle_delete_request(r)
+                },
+                r if r.starts_with("GET /health") => {
+                    println!("GET /health 요청 도착");
+                    handle_health_check(r)
+                },
+                _ => (NOT_FOUND.to_string(), "404 Not Found".to_string()),
+            };
+
+            stream.write_all(format!("{}{}", status_line, content).as_bytes()).unwrap();
+        }
+        Err(e) => {
+            println!("스트림 읽기 중 오류 발생: {}", e);
+        }
     }
 }
 
-/// 모든 아이템을 가져오는 핸들러
-pub async fn get_items(pool: web::Data<PgPool>) -> HttpResponse {
-    let result = sqlx::query_as::<_, Item>(
-        r#"
-        SELECT id, name, description FROM items
-        "#
-    )
-    .fetch_all(pool.get_ref())
-    .await;
+// 헬스 체크 API
+fn handle_health_check(_request: &str) -> (String, String) {
+    (OK_RESPONSE.to_string(), "서버가 정상적으로 작동 중입니다.".to_string())
+}
 
-    match result {
-        Ok(items) => HttpResponse::Ok().json(items),
-        Err(_) => HttpResponse::InternalServerError().finish(),
+// POST 요청 처리 함수
+fn handle_post_request(request: &str) -> (String, String) {
+    match (get_user_request_body(request), Client::connect(DB_URL, NoTls)) {
+        (Ok(user), Ok(mut client)) => {
+            client
+                .execute(
+                    "INSERT INTO users (name, email) VALUES ($1, $2)",
+                    &[&user.name, &user.email]
+                )
+                .unwrap();
+
+            (OK_RESPONSE.to_string(), "User created".to_string())
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
     }
 }
 
-/// 특정 아이템을 가져오는 핸들러
-pub async fn get_item(pool: web::Data<PgPool>, item_id: web::Path<i32>) -> HttpResponse {
-    let result = sqlx::query_as::<_, Item>(
-        r#"
-        SELECT id, name, description FROM items WHERE id = $1
-        "#,
-        *item_id
-    )
-    .fetch_one(pool.get_ref())
-    .await;
+// GET 요청 처리 함수 (특정 사용자)
+fn handle_get_request(request: &str) -> (String, String) {
+    match (get_id(request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
+        (Ok(id), Ok(mut client)) =>
+            match client.query_one("SELECT * FROM users WHERE id = $1", &[&id]) {
+                Ok(row) => {
+                    let user = User {
+                        id: row.get(0),
+                        name: row.get(1),
+                        email: row.get(2),
+                    };
 
-    match result {
-        Ok(item) => HttpResponse::Ok().json(item),
-        Err(_) => HttpResponse::NotFound().finish(),
+                    (OK_RESPONSE.to_string(), serde_json::to_string(&user).unwrap())
+                }
+                _ => (NOT_FOUND.to_string(), "User not found".to_string()),
+            }
+
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
     }
 }
 
-/// 특정 아이템을 업데이트하는 핸들러
-pub async fn update_item(
-    pool: web::Data<PgPool>,
-    item_id: web::Path<i32>,
-    item: web::Json<CreateItem>,
-) -> HttpResponse {
-    let result = sqlx::query!(
-        r#"
-        UPDATE items SET name = $1, description = $2 WHERE id = $3
-        "#,
-        item.name,
-        item.description,
-        *item_id
-    )
-    .execute(pool.get_ref())
-    .await;
+// GET 요청 처리 함수 (모든 사용자)
+fn handle_get_all_request(_request: &str) -> (String, String) {
+    match Client::connect(DB_URL, NoTls) {
+        Ok(mut client) => {
+            let mut users = Vec::new();
 
-    match result {
-        Ok(_) => HttpResponse::Ok().json(item.into_inner()),
-        Err(_) => HttpResponse::InternalServerError().finish(),
+            for row in client.query("SELECT * FROM users", &[]).unwrap() {
+                users.push(User {
+                    id: row.get(0),
+                    name: row.get(1),
+                    email: row.get(2),
+                });
+            }
+
+            (OK_RESPONSE.to_string(), serde_json::to_string(&users).unwrap())
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
     }
 }
 
-/// 특정 아이템을 삭제하는 핸들러
-pub async fn delete_item(pool: web::Data<PgPool>, item_id: web::Path<i32>) -> HttpResponse {
-    let result = sqlx::query!(
-        r#"
-        DELETE FROM items WHERE id = $1
-        "#,
-        *item_id
-    )
-    .execute(pool.get_ref())
-    .await;
+// PUT 요청 처리 함수
+fn handle_put_request(request: &str) -> (String, String) {
+    match
+        (
+            get_id(request).parse::<i32>(),
+            get_user_request_body(request),
+            Client::connect(DB_URL, NoTls),
+        )
+    {
+        (Ok(id), Ok(user), Ok(mut client)) => {
+            client
+                .execute(
+                    "UPDATE users SET name = $1, email = $2 WHERE id = $3",
+                    &[&user.name, &user.email, &id]
+                )
+                .unwrap();
 
-    match result {
-        Ok(_) => HttpResponse::NoContent().finish(),
-        Err(_) => HttpResponse::InternalServerError().finish(),
+            (OK_RESPONSE.to_string(), "User updated".to_string())
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
+    }
+}
+
+// DELETE 요청 처리 함수
+fn handle_delete_request(request: &str) -> (String, String) {
+    match (get_id(request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
+        (Ok(id), Ok(mut client)) => {
+            let rows_affected = client.execute("DELETE FROM users WHERE id = $1", &[&id]).unwrap();
+
+            if rows_affected == 0 {
+                return (NOT_FOUND.to_string(), "User not found".to_string());
+            }
+
+            (OK_RESPONSE.to_string(), "User deleted".to_string())
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
     }
 }

@@ -1,15 +1,20 @@
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
-use std::env;
+use postgres::{Client, NoTls, Error as PostgresError};
 
-/// 데이터베이스 풀을 생성하고 반환합니다.
-pub async fn create_pool() -> PgPool {
-    dotenv::dotenv().ok(); // .env 파일에서 환경 변수 로드
+// 데이터베이스 URL 상수
+pub const DB_URL: &str = env!("DATABASE_URL");
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL 환경 변수를 설정해야 합니다.");
-    PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("데이터베이스에 연결할 수 없습니다.")
+// 데이터베이스 설정 함수
+pub fn set_database() -> Result<(), PostgresError> {
+    // 데이터베이스에 연결
+    let mut client = Client::connect(DB_URL, NoTls)?;
+
+    // 테이블 생성
+    client.batch_execute(
+        "CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            email VARCHAR NOT NULL
+        )"
+    )?;
+    Ok(())
 }
