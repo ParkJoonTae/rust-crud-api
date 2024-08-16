@@ -1,20 +1,20 @@
-version: '3.9'
+version: '3'
 
 services:
   rustapi:
     container_name: rustapi
-    image: ksi05298/rustapi:1.0.0
+    image: ksi05298/rustapi:1.0.1
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+        DATABASE_URL: postgres://postgres:postgres@rustapi-db:5432/postgres
     ports:
       - '8080:8080'
     depends_on:
-      - db
-  db:
-    container_name: db
+      - rustapi-db
+  rustapi-db:
+    container_name: rustapi-db
     image: postgres:12
     environment:
       POSTGRES_USER: postgres
