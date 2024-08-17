@@ -2,9 +2,7 @@
 
 이 프로젝트는 Rust로 간단한 CRUD API 서버를 구현한 것입니다. PostgreSQL 데이터베이스와 연동되며, Docker Compose를 이용해 컨테이너화된 환경에서 실행할 수 있도록 구성하였습니다.
 
-## 1. 프로젝트 구조
-
-프로젝트의 기본 디렉토리 구조는 아래와 같습니다:
+## 1. Repository 구조
 
 ```plaintext
 rust-crud-api/
